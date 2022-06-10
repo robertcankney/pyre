@@ -36,7 +36,7 @@ struct RateConfig {
 
 impl ContextLinker {
     
-    fn new(val: &str) -> std::io::Result<ContextLinker> {
+    pub fn new(val: &str) -> std::io::Result<ContextLinker> {
         let cfg: ContextLinkerConfig = serde_json::from_str(val)?;
 
         let mut linker = ContextLinker{
@@ -113,6 +113,64 @@ mod contextlinker_tests {
                         ],
                     ), 
                     ttls: HashMap::from([("foo".to_string(), 60)]),
+                }
+            ),
+            false
+        ),
+        three_linkers_with_references: (
+            r#"
+            {
+                "linkers": [
+                    {
+                        "name": "foo",
+                        "contexts": ["bar"],
+                        "rate": {
+                            "count": 10,
+                            "ttl_seconds": 60
+                        }
+                    },
+                    {
+                        "name": "bar",
+                        "contexts": ["foo"],
+                        "rate": {
+                            "count": 10,
+                            "ttl_seconds": 60
+                        }
+                    },
+                    {
+                        "name": "foobar",
+                        "contexts": ["foo", "bar"],
+                        "rate": {
+                            "count": 10,
+                            "ttl_seconds": 60
+                        }
+                    }
+                ],
+                "sweep_seconds": 30
+            }
+            "#,
+            Some(
+                ContextLinker{ 
+                    contexts: HashMap::from([
+                            ("foo".to_string(), Link{
+                                contexts: vec!["bar".to_string()], 
+                                rate: 10, 
+                            }),
+                            ("bar".to_string(), Link{
+                                contexts: vec!["foo".to_string()], 
+                                rate: 10, 
+                            }),
+                            ("foobar".to_string(), Link{
+                                contexts: vec!["foo".to_string(), "bar".to_string()], 
+                                rate: 10, 
+                            }),
+                        ],
+                    ), 
+                    ttls: HashMap::from([
+                        ("foo".to_string(), 60),
+                        ("bar".to_string(), 60),
+                        ("foobar".to_string(), 60),
+                        ]),
                 }
             ),
             false

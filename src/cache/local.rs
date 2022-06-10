@@ -325,13 +325,13 @@ mod local_tests {
     #[bench]
     fn bench_get_or_create_concurrent(b: &mut test::Bencher) {
         b.iter(|| {
-            let local = Local::new(8);
+            let local = Local::new(128);
             let local_protected = Arc::new(Mutex::new(local));
             let mut data = vec![Vec::new(); 2];
             let mut rng = rand::thread_rng();
 
             for i in &mut data {
-                for _ in 0..50000 {
+                for _ in 0..500000 {
                     let val: i32 = rng.gen();
                     i.push(val.to_string());
                 }
