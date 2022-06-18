@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Result;
-use std::{collections::HashMap, hash::Hash};
-
+use std::{collections::HashMap, hash::Hash, ops::Deref};
 
 #[derive(Debug, PartialEq)]
 pub struct ContextLinker {
-    contexts: HashMap<String, Link>,
-    ttls: HashMap<String, i64>,
+    pub contexts: HashMap<String, Link>,
+    pub ttls: HashMap<String, i64>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Link {
-    contexts: Vec<String>,
-    rate: i64,
+    pub contexts: Vec<String>,
+    pub rate: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -35,26 +34,42 @@ struct RateConfig {
 }
 
 impl ContextLinker {
-    
-    pub fn new(val: &str) -> std::io::Result<ContextLinker> {
+    pub fn new(val: &str) -> std::io::Result<&'static ContextLinker> {
         let cfg: ContextLinkerConfig = serde_json::from_str(val)?;
 
-        let mut linker = ContextLinker{
+        let mut linker = ContextLinker {
             contexts: Default::default(),
             ttls: Default::default(),
         };
 
-        for link in cfg.linkers {
-            linker.contexts.insert(link.name.clone(), Link{
-                 contexts: link.contexts, 
-                 rate: link.rate.count,
-            });
-            linker.ttls.insert(link.name, link.rate.ttl_seconds);
+        for link in &cfg.linkers {
+            linker.contexts.insert(
+                link.name.clone(),
+                Link {
+                    contexts: link
+                        .contexts
+                        .iter()
+                        .filter(|ctx| cfg.linkers.iter().any(|lnk| lnk.name.eq(ctx.deref())))
+                        .map(|ctx| ctx.clone())
+                        .collect(),
+                    rate: link.rate.count as u64,
+                },
+            );
+            linker.ttls.insert(link.name.clone(), link.rate.ttl_seconds);
         }
 
-        Ok(linker)
+        // mixed feelings on this
+        Ok(Box::leak(Box::new(linker)))
     }
 
+    #[inline(always)]
+    pub fn get_context(&'static self, key: &str) -> Option<&'static Link> {
+        self.contexts.get(key)
+    }
+
+    pub fn get_ttls(&'static self) -> &'static HashMap<String, i64> {
+        &self.ttls
+    }
 }
 
 #[cfg(test)]
@@ -73,7 +88,7 @@ mod contextlinker_tests {
                 match ContextLinker::new(input) {
                     Err(_) => assert_eq!(fail, true),
                     Ok(linker) => {
-                        assert_eq!(expected.expect("should not be None"), linker);
+                        assert_eq!(expected.expect("should not be None"), *linker);
                     },
                 }
             }
@@ -87,13 +102,13 @@ mod contextlinker_tests {
             None::<ContextLinker>,
             true
         ),
-        one_linker: (
+        one_linker_no_context_match: (
             r#"
             {
                 "linkers": [
                     {
                         "name": "foo",
-                        "contexts": [],
+                        "contexts": ["bar"],
                         "rate": {
                             "count": 10,
                             "ttl_seconds": 60
@@ -104,15 +119,60 @@ mod contextlinker_tests {
             }
             "#,
             Some(
-                ContextLinker{ 
+                ContextLinker{
                     contexts: HashMap::from([
                             ("foo".to_string(), Link{
-                                contexts: Vec::default(), 
-                                rate: 10, 
+                                contexts: Vec::default(),
+                                rate: 10,
                             })
                         ],
-                    ), 
+                    ),
                     ttls: HashMap::from([("foo".to_string(), 60)]),
+                }
+            ),
+            false
+        ),
+        two_linkers_one_context_ref: (
+            r#"
+            {
+                "linkers": [
+                    {
+                        "name": "foo",
+                        "contexts": ["bar"],
+                        "rate": {
+                            "count": 10,
+                            "ttl_seconds": 60
+                        }
+                    },
+                    {
+                        "name": "bar",
+                        "contexts": ["foobar"],
+                        "rate": {
+                            "count": 10,
+                            "ttl_seconds": 60
+                        }
+                    }
+                ],
+                "sweep_seconds": 30
+            }
+            "#,
+            Some(
+                ContextLinker{
+                    contexts: HashMap::from([
+                            ("foo".to_string(), Link{
+                                contexts: vec!["bar".to_string()],
+                                rate: 10,
+                            }),
+                            ("bar".to_string(), Link{
+                                contexts: Vec::default(),
+                                rate: 10,
+                            })
+                        ],
+                    ),
+                    ttls: HashMap::from([
+                        ("foo".to_string(), 60),
+                        ("bar".to_string(), 60),
+                        ]),
                 }
             ),
             false
@@ -150,22 +210,22 @@ mod contextlinker_tests {
             }
             "#,
             Some(
-                ContextLinker{ 
+                ContextLinker{
                     contexts: HashMap::from([
                             ("foo".to_string(), Link{
-                                contexts: vec!["bar".to_string()], 
-                                rate: 10, 
+                                contexts: vec!["bar".to_string()],
+                                rate: 10,
                             }),
                             ("bar".to_string(), Link{
-                                contexts: vec!["foo".to_string()], 
-                                rate: 10, 
+                                contexts: vec!["foo".to_string()],
+                                rate: 10,
                             }),
                             ("foobar".to_string(), Link{
-                                contexts: vec!["foo".to_string(), "bar".to_string()], 
-                                rate: 10, 
+                                contexts: vec!["foo".to_string(), "bar".to_string()],
+                                rate: 10,
                             }),
                         ],
-                    ), 
+                    ),
                     ttls: HashMap::from([
                         ("foo".to_string(), 60),
                         ("bar".to_string(), 60),
@@ -176,5 +236,4 @@ mod contextlinker_tests {
             false
         ),
     }
-
 }

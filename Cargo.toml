@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rocket = "0.4.11"
-murmur3 = "0.5.1"
+actix-web = "4"
+derive_more = "0.99.17"
 twox-hash = "1.6.3"
 rand = "0.8"
-byteorder = "1.4.3"
 serde_json = "1.0.81"
 serde = { version = "1.0.137", features = ["derive"] }
+async-std = "1.11.0"

@@ -2,18 +2,22 @@ extern crate test;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
+use std::sync::{Arc, Mutex};
 use std::time;
-use std::sync::{Mutex, Arc};
 
-const PARTITIONS: u32 = 1024;
-const DEFAULT_WINDOW: u64 = 60;
+pub const DEFAULT_PARTITIONS: u32 = 1024;
+pub const DEFAULT_TTL: i64 = 300;
+pub const DEFAULT_WINDOW: u64 = 60;
 
 pub struct Local {
     partition_count: u32,
+    ttl: i64,
+    // TODO check if we can remove Arc, since each Local will be behind an Arc
     partitions: Vec<Arc<Mutex<KeyMap>>>,
     clock: fn() -> u64,
 }
 
+#[derive(Default)]
 pub struct KeyMap {
     ttls: HashMap<String, TTLValues>,
 }
@@ -30,7 +34,7 @@ pub struct TTLValues {
 
 #[derive(Debug, Clone)]
 pub struct CacheError {
-    msg: String
+    msg: String,
 }
 
 impl std::fmt::Display for CacheError {
@@ -40,30 +44,31 @@ impl std::fmt::Display for CacheError {
 }
 
 impl TTLValues {
-    
-  pub fn get(&self, val: u64) -> u64 {
-        let v = self.vals.get(&val).unwrap_or(&0);
-        *v
-    }
-
-   pub fn inc(&mut self, val: u64) -> u64 {
-        let insert = match self.vals.iter().next_back() {
+    fn find_bucket(&self, val: u64) -> u64 {
+        match self.vals.iter().next_back() {
             Some(n) => {
-                let (bucket, new_val) = if val.abs_diff(*n.0) < self.window {
-                    n
+                let b = if val.abs_diff(*n.0) < self.window {
+                    *n.0
                 } else {
-                    (&val, &0)
+                    val
                 };
 
-                (*bucket, *new_val + 1)
-            },
-            None => {
-               (val, 1)
-            },
-        };
+                b
+            }
+            None => val,
+        }
+    }
+    pub fn get(&self, val: u64) -> u64 {
+        let bucket = self.find_bucket(val);
+        *self.vals.get(&bucket).unwrap_or(&0)
+    }
 
-        self.vals.insert(insert.0, insert.1);
-        insert.0
+    pub fn inc(&mut self, val: u64) -> u64 {
+        let bucket = self.find_bucket(val);
+        let updated = self.get(bucket) + 1;
+
+        self.vals.insert(bucket, updated);
+        bucket
     }
 
     pub fn inc_and_get(&mut self, val: u64) -> u64 {
@@ -71,21 +76,20 @@ impl TTLValues {
         self.get(new_key)
     }
 
-  pub  fn new(window: u64) -> Self {
+    pub fn new(window: u64) -> Self {
         Self {
-             window, 
-             vals: BTreeMap::new(),
+            window,
+            vals: BTreeMap::new(),
         }
     }
-    
 }
 
 impl Default for TTLValues {
     fn default() -> Self {
         Self {
-            window: DEFAULT_WINDOW, 
+            window: DEFAULT_WINDOW,
             vals: BTreeMap::new(),
-       }
+        }
     }
 }
 
@@ -130,7 +134,7 @@ mod ttlvalues_tests {
 
         assert_eq!(val.get(1000), 2);
         assert_eq!(val.get(2000), 2);
-        assert_eq!(val.get(5005), 1 );
+        assert_eq!(val.get(5005), 1);
     }
 }
 
@@ -139,28 +143,22 @@ impl KeyMap {
         KeyMap::default()
     }
 
-    pub fn get_or_create(&mut self, key: Key) -> u64 {
+    pub fn get_or_create(&mut self, key: Key, create: bool) -> u64 {
         match self.ttls.get_mut(key.k) {
-            Some(val) => {
-                let state = val.inc_and_get(key.ts);
-                state
+            Some(val) => match create {
+                true => val.inc_and_get(key.ts),
+                false => val.get(key.ts),
             },
-            None => {
-                let mut val = TTLValues::default();
-                let state = val.inc_and_get(key.ts);
-                self.ttls.insert(key.k.to_string(), val);
-                // println!("{} {}", key.k, state);
+            None => match create {
+                true => {
+                    let mut val = TTLValues::default();
+                    let state = val.inc_and_get(key.ts);
+                    self.ttls.insert(key.k.to_string(), val);
 
-                state
+                    state
+                }
+                false => 0,
             },
-        }
-    }
-}
-
-impl Default for KeyMap {
-    fn default() -> Self {
-        Self { 
-            ttls: Default::default() 
         }
     }
 }
@@ -174,94 +172,184 @@ mod keymap_tests {
     fn test_get_or_create() {
         let mut km = KeyMap::new();
 
-        km.get_or_create(Key{
-            k: "foo",
-            ts: 10000,
-        });
-        
-        let foo_val = km.get_or_create(Key{
-            k: "foo",
-            ts: 10005,
-        });
+        km.get_or_create(
+            Key {
+                k: "foo",
+                ts: 10000,
+            },
+            true,
+        );
 
-        let bar_val  = km.get_or_create(Key{
-            k: "bar",
-            ts: 10100,
-        });
+        let foo_val = km.get_or_create(
+            Key {
+                k: "foo",
+                ts: 10005,
+            },
+            true,
+        );
 
-        assert_eq!(km.get_or_create(Key{
-            k: "bar",
-            ts: 10101,
-        }), bar_val + 1);
+        let bar_val = km.get_or_create(
+            Key {
+                k: "bar",
+                ts: 10100,
+            },
+            true,
+        );
 
-        assert_eq!(km.get_or_create(Key{
-            k: "foo",
-            ts: 10050,
-        }), foo_val + 1);
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "bar",
+                    ts: 10101,
+                },
+                true
+            ),
+            bar_val + 1
+        );
 
-        assert_eq!(km.get_or_create(Key{
-            k: "foo",
-            ts: 10150,
-        }), 1);
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "foo",
+                    ts: 10050,
+                },
+                true
+            ),
+            foo_val + 1
+        );
 
-        assert_eq!(km.get_or_create(Key{
-            k: "foobar",
-            ts: 10150,
-        }), 1);
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "bar",
+                    ts: 10101,
+                },
+                false
+            ),
+            bar_val + 1
+        );
 
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "foo",
+                    ts: 10050,
+                },
+                false
+            ),
+            foo_val + 1
+        );
+
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "foobarfoo",
+                    ts: 10050,
+                },
+                false
+            ),
+            0
+        );
+
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "foo",
+                    ts: 10150,
+                },
+                true
+            ),
+            1
+        );
+
+        assert_eq!(
+            km.get_or_create(
+                Key {
+                    k: "foobar",
+                    ts: 10150,
+                },
+                true
+            ),
+            1
+        );
     }
 }
 
 impl Local {
     fn default_clock() -> u64 {
-        time::SystemTime::now().duration_since(time::UNIX_EPOCH)
-                .expect("can't get duration since UNIX 0 - this is a bug in the code").as_secs()
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .expect("can't get duration since UNIX 0 - this is a bug in the code")
+            .as_secs()
     }
 
-    fn new(partitions: u32) -> Self {
-        Self { 
-            partition_count: partitions, 
-            partitions: vec![Arc::new(Mutex::new(KeyMap::default())); partitions as usize],
+    pub fn new(partition_count: u32, ttl: i64) -> Self {
+        Self {
+            partition_count,
+            partitions: {
+                let mut v = Vec::with_capacity(partition_count as usize);
+                (0..partition_count as usize)
+                    .for_each(|_| v.push(Arc::new(Mutex::new(KeyMap::default()))));
+                v
+            },
             clock: Local::default_clock,
+            ttl,
         }
     }
 
-    fn get_or_create(&mut self, key: &str) -> Result<u64, CacheError> {
-        let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
-        let inner = self.partitions.index(partition as usize);
-        let inner_clone = inner.clone();
+    pub fn ttl(&self) -> i64 {
+        self.ttl
+    }
+
+    pub fn get_or_create(&self, key: &str, create: bool) -> Result<u64, CacheError> {
+        let inner_clone = {
+            let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
+            let inner = self.partitions.index(partition as usize);
+            inner.clone()
+        };
 
         let mut lock = match inner_clone.lock() {
             Ok(l) => l,
-            Err(e) => return Err(CacheError{
-               
-                msg: format!("failed to get partitions lock: {}", e.to_string())
-            }),
+            Err(e) => {
+                return Err(CacheError {
+                    msg: format!("failed to get partition lock: {}", e),
+                })
+            }
         };
 
-        let val = lock.get_or_create(Key{
-            k: key,
-            ts: (self.clock)(),
-        });
-        
+        let val = lock.get_or_create(
+            Key {
+                k: key,
+                ts: (self.clock)(),
+            },
+            create,
+        );
+
         Ok(val)
     }
-    
 }
 
 impl Default for Local {
     fn default() -> Self {
-        Self { 
-            partition_count: PARTITIONS, 
-            partitions: vec![Arc::new(Mutex::new(KeyMap::default())); PARTITIONS as usize],
+        Self {
+            partition_count: DEFAULT_PARTITIONS,
+            partitions: {
+                let mut v = Vec::with_capacity(DEFAULT_PARTITIONS as usize);
+                (0..DEFAULT_PARTITIONS as usize)
+                    .for_each(|_| v.push(Arc::new(Mutex::new(KeyMap::default()))));
+                v
+            },
             clock: Local::default_clock,
+            ttl: DEFAULT_TTL,
         }
     }
 }
 
+unsafe impl Sync for Local {}
+
 #[cfg(test)]
 mod local_tests {
-    
+
     extern crate test;
 
     use super::*;
@@ -269,44 +357,49 @@ mod local_tests {
 
     #[test]
     fn test_new_local() {
-        let local = Local::new(5);
+        let local = Local::new(5, 30);
         assert_eq!(local.partition_count, 5);
-        
+        assert_eq!(local.ttl, 30);
+
         let local = Local::default();
-        assert_eq!(local.partition_count, PARTITIONS);
+        assert_eq!(local.partition_count, DEFAULT_PARTITIONS);
+        assert_eq!(local.ttl, DEFAULT_TTL);
     }
 
     #[test]
     fn test_get_or_create() {
-        let mut local = Local::new(10);
-        let val = local.get_or_create("foo");
+        let mut local = Local::new(10, 30);
+        let val = local.get_or_create("foo", true);
         let inner = val.unwrap();
         assert_eq!(inner, 1);
 
-        let val = local.get_or_create("foo");
+        let val = local.get_or_create("foo", true);
         let inner = val.unwrap();
         assert_eq!(inner, 2);
 
-        let val= local.get_or_create("bar");
+        let val = local.get_or_create("bar", true);
         let inner = val.unwrap();
         assert_eq!(inner, 1);
+
+        let val = local.get_or_create("foobar", false);
+        let inner = val.unwrap();
+        assert_eq!(inner, 0);
     }
 
     #[test]
     fn test_get_or_create_concurrent() {
-        let local = Local::new(10);
-        let local_protected = Arc::new(Mutex::new(local));
-        
+        let local = Arc::new(Local::new(10, 30));
+        // let local_protected = Arc::new(Mutex::new(local));
 
         let mut threads = Vec::new();
         for i in 0..9 {
             println!("thread_num {}", i);
-            let lp = local_protected.clone();
+            let lp = local.clone();
             let t = std::thread::spawn(move || {
-                    let mut l = lp.lock().expect("unable to get Local lock");
-                    if let Err(e) = l.get_or_create("foo") {
-                        panic!("failed to get get_or_create: {}", e.to_string()); 
-                    }
+                // let mut l = lp.lock().expect("unable to get Local lock");
+                if let Err(e) = lp.get_or_create("foo", true) {
+                    panic!("failed to get get_or_create: {}", e.to_string());
+                }
             });
             threads.push(t);
         }
@@ -315,9 +408,9 @@ mod local_tests {
             let _ = i.join();
         }
 
-        let val = local_protected.lock().unwrap()
-        .get_or_create("foo")
-        .expect("failed to get Local lock");
+        let val = local
+            .get_or_create("foo", true)
+            .expect("failed to get Local lock");
 
         assert_eq!(val, 10);
     }
@@ -325,8 +418,8 @@ mod local_tests {
     #[bench]
     fn bench_get_or_create_concurrent(b: &mut test::Bencher) {
         b.iter(|| {
-            let local = Local::new(128);
-            let local_protected = Arc::new(Mutex::new(local));
+            let local = Local::new(128, 300);
+            let local_protected = Arc::new(local);
             let mut data = vec![Vec::new(); 2];
             let mut rng = rand::thread_rng();
 
@@ -345,12 +438,12 @@ mod local_tests {
                 let lp = local_protected.clone();
                 let keys = data_iter.next().unwrap();
                 let t = std::thread::spawn(move || {
-                        for key in keys {
-                            let mut l = lp.lock().expect("unable to get Local lock");
-                            if let Err(e) = l.get_or_create(&key) {
-                                panic!("failed to get get_or_create: {}", e.to_string()); 
-                            }
+                    for key in keys {
+                        // let mut l = lp.lock().expect("unable to get Local lock");
+                        if let Err(e) = lp.get_or_create(&key, true) {
+                            panic!("failed to get get_or_create: {}", e.to_string());
                         }
+                    }
                 });
                 threads.push(t);
             }
