@@ -12,8 +12,7 @@ pub const DEFAULT_WINDOW: u64 = 60;
 pub struct Local {
     partition_count: u32,
     ttl: i64,
-    // TODO check if we can remove Arc, since each Local will be behind an Arc
-    partitions: Vec<Arc<Mutex<KeyMap>>>,
+    partitions: Vec<Mutex<KeyMap>>,
     clock: fn() -> u64,
 }
 
@@ -288,8 +287,7 @@ impl Local {
             partition_count,
             partitions: {
                 let mut v = Vec::with_capacity(partition_count as usize);
-                (0..partition_count as usize)
-                    .for_each(|_| v.push(Arc::new(Mutex::new(KeyMap::default()))));
+                (0..partition_count as usize).for_each(|_| v.push(Mutex::new(KeyMap::default())));
                 v
             },
             clock: Local::default_clock,
@@ -302,13 +300,10 @@ impl Local {
     }
 
     pub fn get_or_create(&self, key: &str, create: bool) -> Result<u64, CacheError> {
-        let inner_clone = {
-            let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
-            let inner = self.partitions.index(partition as usize);
-            inner.clone()
-        };
+        let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
+        let inner = self.partitions.index(partition as usize);
 
-        let mut lock = match inner_clone.lock() {
+        let mut lock = match inner.lock() {
             Ok(l) => l,
             Err(e) => {
                 return Err(CacheError {
@@ -336,7 +331,7 @@ impl Default for Local {
             partitions: {
                 let mut v = Vec::with_capacity(DEFAULT_PARTITIONS as usize);
                 (0..DEFAULT_PARTITIONS as usize)
-                    .for_each(|_| v.push(Arc::new(Mutex::new(KeyMap::default()))));
+                    .for_each(|_| v.push(Mutex::new(KeyMap::default())));
                 v
             },
             clock: Local::default_clock,
@@ -345,7 +340,7 @@ impl Default for Local {
     }
 }
 
-unsafe impl Sync for Local {}
+// unsafe impl Sync for Local {}
 
 #[cfg(test)]
 mod local_tests {
@@ -389,7 +384,6 @@ mod local_tests {
     #[test]
     fn test_get_or_create_concurrent() {
         let local = Arc::new(Local::new(10, 30));
-        // let local_protected = Arc::new(Mutex::new(local));
 
         let mut threads = Vec::new();
         for i in 0..9 {
@@ -418,23 +412,25 @@ mod local_tests {
     #[bench]
     fn bench_get_or_create_concurrent(b: &mut test::Bencher) {
         b.iter(|| {
+            let threads = 2;
+            let requests = 100000;
             let local = Local::new(128, 300);
             let local_protected = Arc::new(local);
-            let mut data = vec![Vec::new(); 2];
+            let mut data = vec![Vec::new(); threads];
             let mut rng = rand::thread_rng();
 
             for i in &mut data {
-                for _ in 0..500000 {
+                for _ in 0..requests {
                     let val: i32 = rng.gen();
                     i.push(val.to_string());
                 }
             }
 
             let mut data_iter = data.into_iter();
-            let mut threads = Vec::new();
+            let mut handles = Vec::new();
 
             let now = time::SystemTime::now();
-            for _i in 0..2 {
+            for _i in 0..threads {
                 let lp = local_protected.clone();
                 let keys = data_iter.next().unwrap();
                 let t = std::thread::spawn(move || {
@@ -445,15 +441,19 @@ mod local_tests {
                         }
                     }
                 });
-                threads.push(t);
+                handles.push(t);
             }
 
-            for i in threads {
+            for i in handles {
                 let _ = i.join();
             }
 
             let done = time::SystemTime::now();
-            println!("done: {}", done.duration_since(now).unwrap().as_micros())
+            println!(
+                "done: {}, {} rps",
+                done.duration_since(now).unwrap().as_secs_f64(),
+                (threads * requests) as f64 / done.duration_since(now).unwrap().as_secs_f64()
+            )
         })
     }
 }

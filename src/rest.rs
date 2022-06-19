@@ -2,7 +2,7 @@ use crate::{cache::local, matcher};
 use actix_web::{
     http::{self, header},
     web::{self},
-    HttpRequest, HttpResponse,
+    HttpRequest, HttpResponse, HttpResponseBuilder, ResponseError,
 };
 use derive_more::{Display, Error};
 use serde::{Deserialize, Serialize};
@@ -19,47 +19,26 @@ pub struct Response {
     pub allowed: bool,
 }
 
-#[derive(Debug, Display, Error)]
-pub enum SepulcherErrors {
-    #[display(fmt = "internal error")]
-    InternalError,
-
-    #[display(fmt = "bad request")]
-    MissingCollection,
-
-    #[display(fmt = "bad request")]
-    MissingKey,
+#[derive(Debug, Display, Serialize, Deserialize)]
+#[display(fmt = "{}", msg)]
+pub struct SepulcherError {
+    msg: String,
+    #[serde(skip_serializing)]
+    #[serde(skip_deserializing)]
+    code: actix_web::http::StatusCode,
 }
 
-impl actix_web::error::ResponseError for SepulcherErrors {
-    fn status_code(&self) -> actix_web::http::StatusCode {
-        match *self {
-            SepulcherErrors::InternalError => http::StatusCode::INTERNAL_SERVER_ERROR,
-            SepulcherErrors::MissingCollection => http::StatusCode::BAD_REQUEST,
-            SepulcherErrors::MissingKey => http::StatusCode::BAD_REQUEST,
-        }
+impl ResponseError for SepulcherError {
+    fn status_code(&self) -> http::StatusCode {
+        self.code
     }
 
-    fn error_response(&self) -> HttpResponse {
-        let mut res = HttpResponse::build(self.status_code());
-        let res = res.insert_header(actix_web::http::header::ContentType::json());
+    fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
+        let mut res = HttpResponseBuilder::new(self.status_code());
+        let b = serde_json::to_string(self).expect("failed to serialize response error");
 
-        match self {
-            SepulcherErrors::MissingCollection => {
-                res.body(json!({ "msg": format!("{}: missing collection parameter", self.to_string())}).to_string())
-            },
-            SepulcherErrors::MissingKey => {
-                res.body(json!({ "msg": format!("{}: missing key parameter", self.to_string())}).to_string())
-            }
-            _ => res.body(
-                json!(
-                    {
-                        "msg": self.to_string()
-                    }
-                )
-                .to_string(),
-            ),
-        }
+        res.content_type(header::ContentType::json())
+            .body(actix_web::body::BoxBody::new(b))
     }
 }
 
@@ -77,43 +56,39 @@ impl Handler {
     pub async fn handle<'a>(
         parent: web::Data<&'a Handler>,
         req: HttpRequest,
-    ) -> Result<HttpResponse, SepulcherErrors> {
-        let collection =
-            req.match_info()
-                .get("collection")
-                .ok_or(Err(SepulcherErrors::MissingCollection))?;
+    ) -> Result<HttpResponse, actix_web::Error> {
+        let collection = req.match_info().get("collection").ok_or(SepulcherError {
+            msg: "missing collection parameter".to_string(),
+            code: http::StatusCode::BAD_REQUEST,
+        })?;
 
-        let key = req
-            .match_info()
-            .get("key")
-            .ok_or(Err(SepulcherErrors::MissingKey))?;
+        let key = req.match_info().get("key").ok_or(SepulcherError {
+            msg: "missing key parameter".to_string(),
+            code: http::StatusCode::BAD_REQUEST,
+        })?;
 
-        let link = parent
-            .linker
-            .get_context(collection)
-            .ok_or({
-                println!("can't get linker context {}", collection);
-                SepulcherErrors::InternalError
-            })?;
+        let link = parent.linker.get_context(collection).ok_or({
+            SepulcherError {
+                msg: "cannot find linker for collection parameter".to_string(),
+                code: http::StatusCode::BAD_REQUEST,
+            }
+        })?;
 
-        let cache = parent
-            .caches
-            .get(collection)
-            .ok_or({
-                println!("can't get cache collection {}", collection);
-                SepulcherErrors::BadClientData(
-                "no cache for collection parameter".to_string())
-            })?;
+        let cache = parent.caches.get(collection).ok_or(SepulcherError {
+            msg: "no cache for collection parameter".to_string(),
+            code: http::StatusCode::BAD_REQUEST,
+        })?;
 
         // these need logging
-        let val = cache
-            .get_or_create(key, true)
-            .map_err(|e| { 
-                println!("can't get val: {}", e);
-                SepulcherErrors::InternalError
-            })?;
+        let val = cache.get_or_create(key, true).map_err(|e| {
+            println!("can't get_or_create val: {}", e);
+            SepulcherError {
+                msg: format!("failed to get_or_create val: {}", e),
+                code: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
 
-        if link.rate as u64 >= val {
+        if val >= link.rate as u64 {
             return Ok(HttpResponse::build(http::StatusCode::OK)
                 .insert_header(header::ContentType::json())
                 .body(json!(Response { allowed: false }).to_string()));
@@ -121,9 +96,13 @@ impl Handler {
 
         let mut linked = 0;
         for _ in &link.contexts {
-            linked += cache
-                .get_or_create(key, false)
-                .map_err(|_| SepulcherErrors::InternalError)?;
+            linked += cache.get_or_create(key, false).map_err(|e| {
+                println!("can't get val: {}", e);
+                SepulcherError {
+                    msg: format!("failed to get val: {}", e),
+                    code: http::StatusCode::BAD_REQUEST,
+                }
+            })?;
         }
 
         let mut resp = HttpResponse::build(http::StatusCode::OK);
@@ -140,7 +119,7 @@ impl Handler {
 mod test {
 
     use super::*;
-    use actix_web::{test, body::MessageBody};
+    use actix_web::{body::MessageBody, test};
 
     #[test]
     async fn test_new_handler() {
@@ -199,16 +178,17 @@ mod test {
                 ],
                 "sweep_seconds": 30
             }
-            "#
-        ).expect("failed to create linker");
+            "#,
+        )
+        .expect("failed to create linker");
 
         let leaked = Box::leak(Box::new(linker));
         let handler = Handler::new(leaked);
         let data = web::Data::new(handler);
 
         let req = test::TestRequest::with_uri("http://localhost")
-            .param("collection", "foo")
             .param("key", "foobar")
+            .param("collection", "foo")
             .method(http::Method::GET)
             .to_http_request();
         let resp = Handler::handle(data.clone(), req.clone())
@@ -216,11 +196,10 @@ mod test {
             .expect("unexpected handler error");
         assert_eq!(resp.status(), http::StatusCode::OK);
 
-        //        let body = test::read_body(actix_web::dev::ServiceResponse::new(
-        //            req.clone(),
-        //            resp,
-        //       ))
-        let body = resp.into_body().try_into_bytes().expect("unable to ready body");
+        let body = resp
+            .into_body()
+            .try_into_bytes()
+            .expect("unable to ready body");
         let parsed: Response = serde_json::from_slice(&body[..]).expect("cannot parse as Response");
         assert!(parsed.allowed);
 
@@ -229,9 +208,111 @@ mod test {
             .expect("unexpected handler error");
         assert_eq!(resp.status(), http::StatusCode::OK);
 
-        let body = resp.into_body().try_into_bytes().expect("unable to ready body");
+        let body = resp
+            .into_body()
+            .try_into_bytes()
+            .expect("unable to ready body");
         let parsed: Response = serde_json::from_slice(&body[..]).expect("cannot parse as Response");
-        
+
         assert!(!parsed.allowed);
+    }
+
+    #[test]
+    async fn test_handle_errors() {
+        let linker = matcher::ContextLinker::new(
+            r#"
+            {
+                "linkers": [
+                    {
+                        "name": "foo",
+                        "contexts": ["bar"],
+                        "rate": {
+                            "count": 2,
+                            "ttl_seconds": 60
+                        }
+                    },
+                    {
+                        "name": "bar",
+                        "contexts": ["foo"],
+                        "rate": {
+                            "count": 2,
+                            "ttl_seconds": 60
+                        }
+                    }
+                ],
+                "sweep_seconds": 30
+            }
+            "#,
+        )
+        .expect("failed to create linker");
+
+        let leaked = Box::leak(Box::new(linker));
+        let handler = Handler::new(leaked);
+        let data = web::Data::new(handler);
+
+        let resp = do_test_request("http://localhost", Some("foobar"), None, data.clone())
+            .await
+            .expect_err("did not error as expected")
+            .error_response();
+        assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .try_into_bytes()
+            .expect("unable to ready body");
+        let parsed: SepulcherError =
+            serde_json::from_slice(&body[..]).expect("cannot parse as SepulcherError");
+        assert!(parsed.msg.contains("missing collection parameter"));
+
+        let resp = do_test_request("http://localhost", None, Some("foo"), data.clone())
+            .await
+            .expect_err("did not error as expected")
+            .error_response();
+        assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .try_into_bytes()
+            .expect("unable to ready body");
+        let parsed: SepulcherError =
+            serde_json::from_slice(&body[..]).expect("cannot parse as SepulcherError");
+        assert!(parsed.msg.contains("missing key parameter"));
+
+        let resp = do_test_request(
+            "http://localhost",
+            Some("foobar"),
+            Some("foobar"),
+            data.clone(),
+        )
+        .await
+        .expect_err("did not error as expected")
+        .error_response();
+        assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .try_into_bytes()
+            .expect("unable to ready body");
+        let parsed: SepulcherError =
+            serde_json::from_slice(&body[..]).expect("cannot parse as SepulcherError");
+        assert!(parsed.msg.contains("cannot find linker"));
+    }
+
+    async fn do_test_request(
+        uri: &'static str,
+        key: Option<&'static str>,
+        collection: Option<&'static str>,
+        data: web::Data<&Handler>,
+    ) -> Result<HttpResponse, actix_web::Error> {
+        let mut req = test::TestRequest::with_uri(uri);
+        if let Some(c) = collection {
+            req = req.param("collection", c);
+        }
+
+        if let Some(k) = key {
+            req = req.param("key", k);
+        }
+
+        Handler::handle(data, req.to_http_request()).await
     }
 }
