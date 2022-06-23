@@ -2,7 +2,7 @@ extern crate test;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time;
 
 pub const DEFAULT_PARTITIONS: u32 = 1024;
@@ -46,17 +46,16 @@ impl TTLValues {
     fn find_bucket(&self, val: u64) -> u64 {
         match self.vals.iter().next_back() {
             Some(n) => {
-                let b = if val.abs_diff(*n.0) < self.window {
+                if val.abs_diff(*n.0) < self.window {
                     *n.0
                 } else {
                     val
-                };
-
-                b
+                }
             }
             None => val,
         }
     }
+
     pub fn get(&self, val: u64) -> u64 {
         let bucket = self.find_bucket(val);
         *self.vals.get(&bucket).unwrap_or(&0)

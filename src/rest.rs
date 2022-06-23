@@ -4,7 +4,7 @@ use actix_web::{
     web::{self},
     HttpRequest, HttpResponse, HttpResponseBuilder, ResponseError,
 };
-use derive_more::{Display, Error};
+use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -53,8 +53,8 @@ impl Handler {
         Box::leak(Box::new(Handler { caches, linker }))
     }
 
-    pub async fn handle<'a>(
-        parent: web::Data<&'a Handler>,
+    pub async fn handle(
+        parent: web::Data<&Handler>,
         req: HttpRequest,
     ) -> Result<HttpResponse, actix_web::Error> {
         let collection = req.match_info().get("collection").ok_or(SepulcherError {

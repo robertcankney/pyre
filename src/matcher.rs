@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Result;
-use std::{collections::HashMap, hash::Hash, ops::Deref};
 
-#[derive(Debug, PartialEq)]
+use std::{collections::HashMap, ops::Deref};
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct ContextLinker {
     pub contexts: HashMap<String, Link>,
     pub ttls: HashMap<String, i64>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Link {
     pub contexts: Vec<String>,
     pub rate: u64,
@@ -50,7 +50,7 @@ impl ContextLinker {
                         .contexts
                         .iter()
                         .filter(|ctx| cfg.linkers.iter().any(|lnk| lnk.name.eq(ctx.deref())))
-                        .map(|ctx| ctx.clone())
+                        .cloned()
                         .collect(),
                     rate: link.rate.count as u64,
                 },
