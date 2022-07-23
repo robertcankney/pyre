@@ -15,4 +15,4 @@ serde = { version = "1.0.137", features = ["derive"] }
 ticker = "0.1.1"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.11", features = ["json"]}
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.20", features = ["full", "time", "test-util"] }

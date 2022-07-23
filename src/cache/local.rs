@@ -534,13 +534,12 @@ impl Local {
     }
 
     pub fn start_lru(cache: std::sync::Arc<Self>) {
-        // let lru_guard = std::sync::Arc::new(self);
         let sweep = cache.sweep;
 
         tokio::spawn(async move {
-            let ticker =
-                ticker::Ticker::new(std::iter::repeat(true), time::Duration::from_secs(sweep));
-            for _ in ticker {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(sweep));
+            loop {
+                ticker.tick().await;
                 cache.lru();
             }
         });
@@ -548,8 +547,9 @@ impl Local {
 
     pub fn start_clock(cache: std::sync::Arc<Self>) {
         tokio::spawn(async move {
-            let ticker = ticker::Ticker::new(std::iter::repeat(true), time::Duration::from_secs(1));
-            for _ in ticker {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                ticker.tick().await;
                 cache.clock.store(
                     time::SystemTime::now()
                         .duration_since(time::UNIX_EPOCH)
@@ -613,9 +613,26 @@ mod local_tests {
         assert_eq!(local.ttl, DEFAULT_TTL);
     }
 
-    // TODO finish testing LRU + start
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_lru() {
+    #[tokio::test]
+    async fn test_start_clock() {
+        let local = std::sync::Arc::new(Local::new(2, 30, 5, 1));
+        Local::start_clock(local.clone());
+        let mut running_time = local.clock.load(Relaxed);
+
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let curr = local.clock.load(Relaxed);
+            // tokio::time::sleep should only ever sleep longer than 1 second, as the executor will put it back to sleep if the
+            // Instant we are waiting for hasn't elapsed. As such, for some starting time edge cases that can lead to us going
+            // from, say, time 19 to time 21 for a 1 second sleep, so we allow it to be 1 or 2 ahead of start time
+            assert!(curr == running_time || curr == running_time + 1, "expected {}, got {}", running_time, curr);
+            running_time += 1;
+        }
+    }
+
+    // test_start_lru combines coverage for lru and start_lru
+    #[tokio::test]
+    async fn test_start_lru() {
         struct TestCase {
             name: &'static str,
             vals: HashMap<&'static str, Vec<u64>>, // vals to insert before ttl
@@ -644,7 +661,7 @@ mod local_tests {
         ];
 
         for tc in testcases {
-            let local = Box::leak(Box::new(Local::new(2, TTL, 5, 1)));
+            let local = std::sync::Arc::new(Local::new(2, TTL, 5, 1));
 
             for (k, v) in tc.vals {
                 for e in v {
@@ -656,9 +673,8 @@ mod local_tests {
             }
 
             local.clock.store(HARDCODED_TIME, Relaxed);
-            println!("{:?}", local);
-            local.lru();
-            println!("{:?}", local);
+            Local::start_lru(local.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
             for (k, v) in tc.expected {
                 let val = local
