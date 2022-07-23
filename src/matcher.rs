@@ -5,7 +5,8 @@ use std::{collections::HashMap, ops::Deref};
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContextLinker {
     pub contexts: HashMap<String, Link>,
-    pub ttls: HashMap<String, i64>,
+    pub ttls: HashMap<String, u64>,
+    pub sweep: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub struct Link {
 #[derive(Serialize, Deserialize)]
 struct ContextLinkerConfig {
     linkers: Vec<ContextLinkerSub>,
-    sweep_seconds: i64,
+    sweep_seconds: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -29,8 +30,8 @@ struct ContextLinkerSub {
 
 #[derive(Serialize, Deserialize)]
 struct RateConfig {
-    count: i64,
-    ttl_seconds: i64,
+    count: u64,
+    ttl_seconds: u64,
 }
 
 impl ContextLinker {
@@ -40,6 +41,7 @@ impl ContextLinker {
         let mut linker = ContextLinker {
             contexts: Default::default(),
             ttls: Default::default(),
+            sweep: cfg.sweep_seconds,
         };
 
         for link in &cfg.linkers {
@@ -67,7 +69,7 @@ impl ContextLinker {
         self.contexts.get(key)
     }
 
-    pub fn get_ttls(&'static self) -> &'static HashMap<String, i64> {
+    pub fn get_ttls(&'static self) -> &'static HashMap<String, u64> {
         &self.ttls
     }
 }
@@ -77,6 +79,7 @@ mod contextlinker_tests {
 
     use super::*;
 
+    // fun little experiment in using macros for tests - not sure how I feel about it
     macro_rules! new_context_linker_tests {
         ($($name:ident: $value:expr,)*) => {
         $(
@@ -128,6 +131,7 @@ mod contextlinker_tests {
                         ],
                     ),
                     ttls: HashMap::from([("foo".to_string(), 60)]),
+                    sweep: 30,
                 }
             ),
             false
@@ -173,6 +177,7 @@ mod contextlinker_tests {
                         ("foo".to_string(), 60),
                         ("bar".to_string(), 60),
                         ]),
+                    sweep: 30,
                 }
             ),
             false
@@ -231,6 +236,7 @@ mod contextlinker_tests {
                         ("bar".to_string(), 60),
                         ("foobar".to_string(), 60),
                         ]),
+                    sweep: 30,
                 }
             ),
             false

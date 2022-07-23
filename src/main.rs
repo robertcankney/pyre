@@ -4,6 +4,8 @@ use actix_web::{
     web::{self, Data},
     App, HttpServer,
 };
+use tracing;
+use tracing_subscriber;
 
 mod cache;
 mod matcher;
@@ -11,6 +13,12 @@ mod rest;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    let format = tracing_subscriber::fmt::format().json();
+    let subscriber = tracing_subscriber::fmt().event_format(format).finish();
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|err| eprintln!("Unable to set global default subscriber: {}", err))
+        .unwrap();
+
     let contents = std::fs::read_to_string("config.json").expect("failed to open config");
     let linker = matcher::ContextLinker::new(&contents).expect("failed to create ContextLinker");
     let handler = rest::Handler::new(linker);
