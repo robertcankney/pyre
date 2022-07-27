@@ -625,7 +625,12 @@ mod local_tests {
             // tokio::time::sleep should only ever sleep longer than 1 second, as the executor will put it back to sleep if the
             // Instant we are waiting for hasn't elapsed. As such, for some starting time edge cases that can lead to us going
             // from, say, time 19 to time 21 for a 1 second sleep, so we allow it to be 1 or 2 ahead of start time
-            assert!(curr == running_time || curr == running_time + 1, "expected {}, got {}", running_time, curr);
+            assert!(
+                curr == running_time || curr == running_time + 1,
+                "expected {}, got {}",
+                running_time,
+                curr
+            );
             running_time += 1;
         }
     }

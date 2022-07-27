@@ -40,5 +40,5 @@ func main() {
 	done := time.Now()
 	total := done.Sub(start)
 
-	fmt.Printf("took %d milliseconds to do %d requests in %d goroutines:\n \t - %f per second\n", total.Milliseconds(), threads, count, count/total.Seconds())
+	fmt.Printf("took %d milliseconds to do %d requests in %d goroutines:\n \t - %f per second\n", total.Milliseconds(), count, threads, count/total.Seconds())
 }

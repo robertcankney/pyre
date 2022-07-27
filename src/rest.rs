@@ -46,7 +46,8 @@ impl ResponseError for HTTPError {
 
 impl Handler {
     // TODO remove unnecessary statics for config
-    pub fn new(linker: &'static matcher::ContextLinker) -> &'static Handler {
+    #[inline(always)]
+    pub fn new(linker: &'static matcher::ContextLinker) -> Handler {
         let mut caches = HashMap::new();
 
         for (k, v) in linker.get_ttls() {
@@ -61,7 +62,7 @@ impl Handler {
             caches.insert(k.as_str(), local);
         }
 
-        Box::leak(Box::new(Handler { caches, linker }))
+        Handler { caches, linker }
     }
 
     #[instrument]
@@ -228,7 +229,7 @@ mod test {
 
         let leaked = Box::leak(Box::new(allow_two_linker));
         let handler = Handler::new(leaked);
-        let data = web::Data::new(handler);
+        let data = web::Data::new(&handler);
 
         let testcases = vec![
             TestCase {
@@ -309,7 +310,7 @@ mod test {
 
         let leaked = Box::leak(Box::new(linker));
         let handler = Handler::new(leaked);
-        let data = web::Data::new(handler);
+        let data = web::Data::new(&handler);
 
         let testcases = vec![
             TestCase {
