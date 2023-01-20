@@ -12,8 +12,8 @@ use tracing::{event, instrument, Level};
 
 #[derive(Debug)]
 pub struct Handler {
-    caches: HashMap<&'static str, std::sync::Arc<local::Local>>,
-    linker: &'static matcher::ContextLinker,
+    caches: HashMap<String, std::sync::Arc<local::Local>>,
+    linker: matcher::ContextLinker,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -45,9 +45,8 @@ impl ResponseError for HTTPError {
 }
 
 impl Handler {
-    // TODO remove unnecessary statics for config
-    #[inline(always)]
-    pub fn new(linker: &'static matcher::ContextLinker) -> Handler {
+
+    pub fn new(linker: matcher::ContextLinker) -> Handler {
         let mut caches = HashMap::new();
 
         for (k, v) in linker.get_ttls() {
@@ -57,9 +56,9 @@ impl Handler {
                 local::DEFAULT_WINDOW,
                 linker.sweep,
             ));
-            local::Local::start_lru(local.clone());
-            local::Local::start_clock(local.clone());
-            caches.insert(k.as_str(), local);
+            local.start_lru();
+            local.start_clock();
+            caches.insert(k.to_owned(), local);
         }
 
         Handler { caches, linker }
@@ -67,11 +66,16 @@ impl Handler {
 
     #[instrument]
     pub async fn handle(
-        parent: web::Data<&Handler>,
+        parent: web::Data<Handler>,
         req: HttpRequest,
     ) -> Result<HttpResponse, actix_web::Error> {
+        let span = tracing::error_span!("error_span! macro");
+        span.in_scope(|| {
+            tracing::error!("error! macro");
+        });
+
         let coll = req.match_info().get("collection").ok_or_else(|| {
-            event!(Level::INFO, "no collection URL parameter");
+            tracing::error!("no collection URL parameter");
 
             HTTPError {
                 msg: "missing collection parameter".to_string(),
@@ -80,7 +84,7 @@ impl Handler {
         })?;
 
         let key = req.match_info().get("key").ok_or_else(|| {
-            event!(Level::INFO, "no key URL parameter");
+            tracing::info!("no key URL parameter");
 
             HTTPError {
                 msg: "missing key parameter".to_string(),
@@ -91,7 +95,7 @@ impl Handler {
         let cache = parent.caches.get(coll).ok_or_else(|| {
             event!(
                 Level::ERROR,
-                message = "no cache for collection parameter, but linker already found with it",
+                message = "no cache found for provided collection parameter",
                 collection = coll
             );
 
@@ -132,6 +136,8 @@ impl Handler {
                 .body(json!(Response { allowed: false }).to_string()));
         }
 
+        // what is this? shouldn't this be adding to val based on keys in link.contexts?
+        // need to check tests, very odd
         let mut linked = 0;
         for _ in &link.contexts {
             linked += cache.get_or_create(key, false).map_err(|e| {
@@ -171,8 +177,7 @@ mod test {
         linker.ttls.insert("foo".to_string(), 10);
         linker.ttls.insert("bar".to_string(), 20);
 
-        let leaked = Box::leak(Box::new(linker));
-        let handler = Handler::new(leaked);
+        let handler = Handler::new(linker);
 
         assert_eq!(
             handler
@@ -193,12 +198,13 @@ mod test {
         );
     }
 
-    #[test]
-    async fn test_handle_rate() {
-        struct TestCase {
-            allowed: bool,
-            name: &'static str,
-        }
+    macro_rules! handle_rate_tests {
+        ($($name:ident: $value:expr,)*) => {
+        $(
+            #[test]
+            async fn $name() {
+
+                let (count, allowed) = $value;
 
         let allow_two_linker = matcher::ContextLinker::new(
             r#"
@@ -227,26 +233,12 @@ mod test {
         )
         .expect("failed to create linker");
 
-        let leaked = Box::leak(Box::new(allow_two_linker));
-        let handler = Handler::new(leaked);
-        let data = web::Data::new(&handler);
+        let handler = Handler::new(allow_two_linker);
+        let data = web::Data::new(handler);
 
-        let testcases = vec![
-            TestCase {
-                name: "initially allowed",
-                allowed: true,
-            },
-            TestCase {
-                name: "still allowed",
-                allowed: true,
-            },
-            TestCase {
-                name: "no longer allowed",
-                allowed: false,
-            },
-        ];
+        let mut limited = true;
 
-        for tc in testcases {
+        for _ in 0..count {
             let req = test::TestRequest::with_uri("http://localhost")
                 .param("key", "foobar")
                 .param("collection", "foo")
@@ -263,111 +255,112 @@ mod test {
                 .expect("unable to ready body");
             let parsed: Response =
                 serde_json::from_slice(&body[..]).expect("cannot parse as Response");
-            assert_eq!(
-                parsed.allowed, tc.allowed,
-                "allowed value not correct for {}",
-                tc.name
-            );
+            limited = parsed.allowed;
+        }
+                assert_eq!(allowed, limited);
+            }
+        )*
         }
     }
 
-    #[test]
-    async fn test_handle_errors() {
-        struct TestCase {
-            name: &'static str,
-            code: http::StatusCode,
-            body: &'static str,
-            collection: Option<&'static str>,
-            key: Option<&'static str>,
-        }
+    handle_rate_tests! {
+        handle_rate_one_request: (1, true),
+        handle_rate_two_requests: (2, true),
+        handle_rate_three_requests: (3, false),
+    }
 
-        let linker = matcher::ContextLinker::new(
-            r#"
-            {
-                "linkers": [
-                    {
-                        "name": "foo",
-                        "contexts": ["bar"],
-                        "rate": {
-                            "count": 2,
-                            "ttl_seconds": 60
+
+    macro_rules! handle_errors_tests {
+        ($($name:ident: $value:expr,)*) => {
+            $(
+                #[test]
+                async fn $name() {
+                    let (code, err, collection, key) = $value; 
+
+                    let linker = matcher::ContextLinker::new(
+                        r#"
+                        {
+                            "linkers": [
+                                {
+                                    "name": "foo",
+                                    "contexts": ["bar"],
+                                    "rate": {
+                                        "count": 2,
+                                        "ttl_seconds": 60
+                                    }
+                                },
+                                {
+                                    "name": "bar",
+                                    "contexts": ["foo"],
+                                    "rate": {
+                                        "count": 2,
+                                        "ttl_seconds": 60
+                                    }
+                                }
+                            ],
+                            "sweep_seconds": 30
                         }
-                    },
-                    {
-                        "name": "bar",
-                        "contexts": ["foo"],
-                        "rate": {
-                            "count": 2,
-                            "ttl_seconds": 60
-                        }
-                    }
-                ],
-                "sweep_seconds": 30
-            }
-            "#,
-        )
-        .expect("failed to create linker");
+                        "#,
+                    )
+                    .expect("failed to create linker");
 
-        let leaked = Box::leak(Box::new(linker));
-        let handler = Handler::new(leaked);
-        let data = web::Data::new(&handler);
+                    let handler = Handler::new(linker);
+                    let data = web::Data::new(handler);
 
-        let testcases = vec![
-            TestCase {
-                name: "missing collection parameter",
-                code: http::StatusCode::BAD_REQUEST,
-                body: "missing collection parameter",
-                collection: None,
-                key: Some("foo"),
-            },
-            TestCase {
-                name: "missing key parameter",
-                code: http::StatusCode::BAD_REQUEST,
-                body: "missing key parameter",
-                collection: Some("foo"),
-                key: None,
-            },
-            TestCase {
-                name: "invalid collection parameter",
-                code: http::StatusCode::BAD_REQUEST,
-                body: "no cache for collection parameter",
-                collection: Some("foobar"),
-                key: Some("bar"),
-            },
-        ];
+                    let resp = do_test_request("http://localhost", key, collection, data.clone())
+                    .await
+                    .expect_err("did not error as expected")
+                    .error_response();
 
-        for tc in testcases {
-            let resp = do_test_request("http://localhost", tc.key, tc.collection, data.clone())
-                .await
-                .expect_err(format!("{} did not error as expected", tc.name).as_str())
-                .error_response();
-            assert_eq!(
-                resp.status(),
-                tc.code,
-                "unexpected status code for {}",
-                tc.name
-            );
-
-            let body = resp
-                .into_body()
-                .try_into_bytes()
-                .expect("unable to ready body");
-            let parsed: HTTPError =
-                serde_json::from_slice(&body[..]).expect("cannot parse as HTTPError");
-            assert!(
-                parsed.msg.contains(tc.body),
-                "body does not match expected for {}: {}",
-                tc.name,
-                parsed.msg
-            );
+                    assert_eq!(
+                        resp.status(),
+                        code,
+                        "unexpected status code",
+                    );
+        
+                    let body = resp
+                        .into_body()
+                        .try_into_bytes()
+                        .expect("unable to ready body");
+                    let parsed: HTTPError =
+                        serde_json::from_slice(&body[..]).expect("cannot parse as HTTPError");
+                    assert!(
+                        parsed.msg.contains(err),
+                        "body does not match expected: {}",
+                        parsed.msg
+                    );
+                }
+    
+            )*
         }
+    }
+
+    handle_errors_tests! {
+        handle_missing_collection_parameter: (
+            http::StatusCode::BAD_REQUEST,
+            "missing collection parameter",
+            None,
+            Some("foo"),
+        ),
+        handle_missing_key_parameter: (
+            http::StatusCode::BAD_REQUEST,
+            "missing key parameter",
+            Some("foo"),
+            None,
+        ),
+        handle_invalid_collection_parameter: (
+            http::StatusCode::BAD_REQUEST,
+            "no cache for collection parameter",
+            Some("foobar"),
+            Some("bar"),
+        ),
     }
 
     async fn do_test_request(
         uri: &'static str,
         key: Option<&'static str>,
         collection: Option<&'static str>,
-        data: web::Data<&Handler>,
+        data: web::Data<Handler>,
     ) -> Result<HttpResponse, actix_web::Error> {
         let mut req = test::TestRequest::with_uri(uri);
         if let Some(c) = collection {

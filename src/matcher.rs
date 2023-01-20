@@ -35,7 +35,7 @@ struct RateConfig {
 }
 
 impl ContextLinker {
-    pub fn new(val: &str) -> std::io::Result<&'static ContextLinker> {
+    pub fn new(val: &str) -> std::io::Result<ContextLinker> {
         let cfg: ContextLinkerConfig = serde_json::from_str(val)?;
 
         let mut linker = ContextLinker {
@@ -61,51 +61,48 @@ impl ContextLinker {
         }
 
         // mixed feelings on this
-        Ok(Box::leak(Box::new(linker)))
+        Ok(linker)
     }
 
     #[inline(always)]
-    pub fn get_context(&'static self, key: &str) -> Option<&'static Link> {
+    pub fn get_context(&self, key: &str) -> Option<&Link> {
         self.contexts.get(key)
     }
 
-    pub fn get_ttls(&'static self) -> &'static HashMap<String, u64> {
+    pub fn get_ttls(&self) -> &HashMap<String, u64> {
         &self.ttls
     }
 }
 
 #[cfg(test)]
-mod contextlinker_tests {
+mod tests {
 
     use super::*;
 
-    // fun little experiment in using macros for tests - not sure how I feel about it
     macro_rules! new_context_linker_tests {
         ($($name:ident: $value:expr,)*) => {
-        $(
-            #[test]
-            fn $name() {
-                let input: &str = $value.0;
-                let expected: Option<ContextLinker> = $value.1;
-                let fail: bool = $value.2;
-                match ContextLinker::new(input) {
-                    Err(_) => assert_eq!(fail, true),
-                    Ok(linker) => {
-                        assert_eq!(expected.expect("should not be None"), *linker);
-                    },
+            $(
+                #[test]
+                fn $name() {
+                    let (input, expected, fail) = $value;
+                    match ContextLinker::new(input) {
+                        Err(_) => assert_eq!(fail, true),
+                        Ok(linker) => {
+                            assert_eq!(expected.expect("should not be None"), linker);
+                        },
+                    }
                 }
-            }
-        )*
+            )*
         }
     }
 
     new_context_linker_tests! {
-        invalid_json: (
+        context_linker_invalid_json: (
             r#"{"linkers":}"#,
             None::<ContextLinker>,
             true
         ),
-        one_linker_no_context_match: (
+        context_linker_one_linker_no_context_match: (
             r#"
             {
                 "linkers": [
@@ -136,7 +133,7 @@ mod contextlinker_tests {
             ),
             false
         ),
-        two_linkers_one_context_ref: (
+        context_linker_two_linkers_one_context_ref: (
             r#"
             {
                 "linkers": [
@@ -182,7 +179,7 @@ mod contextlinker_tests {
             ),
             false
         ),
-        three_linkers_with_references: (
+        context_linker_three_linkers_with_references: (
             r#"
             {
                 "linkers": [

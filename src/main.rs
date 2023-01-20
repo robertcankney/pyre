@@ -1,5 +1,4 @@
 #![feature(test)]
-
 use actix_web::{
     web::{self, Data},
     App, HttpServer,
@@ -15,7 +14,7 @@ mod rest;
 async fn main() -> std::io::Result<()> {
     let format = tracing_subscriber::fmt::format().json();
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
+        // .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
         .event_format(format)
         .with_writer(std::io::stdout)
         .finish();
@@ -29,10 +28,13 @@ async fn main() -> std::io::Result<()> {
     let wrapper = Data::new(handler);
 
     HttpServer::new(move || {
-        App::new().app_data(wrapper.clone()).route(
-            "rate/{collection}/{key}",
-            web::get().to(rest::Handler::handle),
-        )
+        App::new()
+            .wrap(tracing_actix_web::TracingLogger::default())
+            .app_data(wrapper.clone())
+            .route(
+                "rate/{collection}/{key}",
+                web::get().to(rest::Handler::handle),
+            )
     })
     .bind(("127.0.0.1", 8080))?
     .run()

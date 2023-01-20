@@ -13,6 +13,7 @@ rand = "0.8"
 serde_json = "1.0.81"
 serde = { version = "1.0.137", features = ["derive"] }
 ticker = "0.1.1"
-tracing = "0.1.35"
+tracing = {version = "0.1.36", features = ["attributes"]}
+tracing-actix-web = "0.6.0"
 tracing-subscriber = { version = "0.3.11", features = ["json"]}
 tokio = { version = "1.20", features = ["full", "time", "test-util"] }

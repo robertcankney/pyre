@@ -1,8 +1,9 @@
 extern crate test;
 
+use super::CacheError;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
-use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Mutex};
+use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Mutex, RwLock, Arc};
 use std::time;
 use tokio;
 
@@ -16,7 +17,17 @@ pub struct Local {
     partition_count: u32,
     ttl: u64,
     sweep: u64,
+    /*  we want to use a Mutex for better overall performance on OS X - this is due to 
+        platform-specific differences in how pthread_rwlock works, which is used internally
+        (see https://stdrs.dev/nightly/x86_64-apple-darwin/std/sys/unix/locks/pthread_rwlock/struct.AllocatedRwLock.html).
+        This seems to be due to OS X preferring writers to readers, as seen at
+        https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/pthread_rwlock_rdlock.3.html.
+        Linux and other *nix platforms work better with a pthread_rwlock.
+    */
+    #[cfg(target_os = "macos")]
     partitions: Vec<Mutex<KeyMap>>,
+    #[cfg(not(target_os = "macos"))]
+    partitions: Vec<RwLock<KeyMap>>,
     clock: AtomicU64,
 }
 
@@ -37,10 +48,6 @@ pub struct TTLValues {
     vals: BTreeMap<u64, u64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CacheError {
-    msg: String,
-}
 
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,7 +98,7 @@ impl TTLValues {
         }
     }
 
-    // very naive solution currently, attempting to keep to log(n).
+    // very naive solution currently
     fn lru(&mut self, ttl: u64) {
         let mut wrapper = None;
 
@@ -121,7 +128,7 @@ impl Default for TTLValues {
     fn default() -> Self {
         Self {
             window: DEFAULT_WINDOW,
-            vals: BTreeMap::new(),
+            vals: Default::default(),
         }
     }
 }
@@ -159,6 +166,7 @@ mod ttlvalues_tests {
         assert_eq!(val.inc_and_get(2000), 3)
     }
 
+    // testcase-based rather than macro-based to simplify state across cases
     #[test]
     fn test_get() {
         struct TestCase {
@@ -202,6 +210,7 @@ mod ttlvalues_tests {
         }
     }
 
+    // testcase-based rather than macro-based to simplify maintaining state across cases
     #[test]
     fn test_inc() {
         struct TestCase {
@@ -250,51 +259,30 @@ mod ttlvalues_tests {
         }
     }
 
-    #[test]
-    fn test_lru() {
-        struct TestCase {
-            name: &'static str,
-            vals: Vec<u64>,
-            ttl: u64,
-            len: usize,
+    macro_rules! ttl_values_lru_tests {
+        ($($name:ident: $value:expr,)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let (vals, ttl, len) = $value;
+
+                    let mut ttl_val = TTLValues::new(5);
+                    for v in vals {
+                        ttl_val.inc(v);
+                    }
+        
+                    ttl_val.lru(ttl);
+                    assert_eq!(ttl_val.vals.len(), len);
+                }
+            )*
         }
+    }
 
-        let cases = vec![
-            TestCase {
-                name: "empty ttlvalues",
-                vals: vec![],
-                ttl: 50,
-                len: 0,
-            },
-            TestCase {
-                name: "deletes 2, keeps 1",
-                vals: vec![10, 20, 50],
-                ttl: 30,
-                len: 1,
-            },
-            TestCase {
-                name: "deletes none",
-                vals: vec![40, 50, 60],
-                ttl: 30,
-                len: 3,
-            },
-            TestCase {
-                name: "deletes all",
-                vals: vec![10, 20, 25],
-                ttl: 30,
-                len: 0,
-            },
-        ];
-
-        for tc in cases {
-            let mut tvalues = TTLValues::new(5);
-            for v in tc.vals {
-                tvalues.inc(v);
-            }
-
-            tvalues.lru(tc.ttl);
-            assert_eq!(tvalues.vals.len(), tc.len, "test_case {}", tc.name);
-        }
+    ttl_values_lru_tests! {
+        ttl_values_lru_empty: (vec![], 50, 0),
+        ttl_values_delete_2_keep_1: (vec![10, 20, 50], 30, 1),
+        ttl_values_delete_none: (vec![40, 50, 60], 30, 3),
+        ttl_values_delete_all: (vec![10, 20, 25], 30, 0),
     }
 }
 
@@ -338,6 +326,7 @@ mod keymap_tests {
 
     use super::*;
 
+    // testcase-based rather than macro-based to simplify state across cases
     #[test]
     fn test_get_or_create() {
         struct TestCase {
@@ -349,8 +338,6 @@ mod keymap_tests {
 
         let mut km = KeyMap::new(60);
 
-        // badly need to clean these up
-        // test: initial, update, no update, new window update, new window no update, new key no update, new key update
         let testcases = vec![
             TestCase {
                 key: Key {
@@ -427,61 +414,56 @@ mod keymap_tests {
         }
     }
 
-    #[test]
-    fn test_lru() {
-        struct TestCase {
-            name: &'static str,
-            vals: HashMap<&'static str, Vec<u64>>,
-            len: usize,
-        }
+    macro_rules! keymap_lru_tests {
+        ($($name:ident: $value:expr,)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let (vals, len) = $value;
+                    let mut km = KeyMap::new(30);
 
-        let cases = vec![
-            TestCase {
-                name: "delete 1, keep 2",
-                vals: HashMap::from([
-                    ("foo", vec![10, 20, 25]),
-                    ("bar", vec![10, 20, 50]),
-                    ("foobar", vec![40, 50, 60]),
-                ]),
-                len: 2,
-            },
-            TestCase {
-                name: "delete all",
-                vals: HashMap::from([
-                    ("foo", vec![10, 20, 25]),
-                    ("bar", vec![10, 20, 22]),
-                    ("foobar", vec![5, 1, 28]),
-                ]),
-                len: 0,
-            },
-            TestCase {
-                name: "delete none",
-                vals: HashMap::from([
-                    ("foo", vec![40, 50, 55]),
-                    ("bar", vec![32, 37, 50]),
-                    ("foobar", vec![40, 50, 60]),
-                ]),
-                len: 3,
-            },
-        ];
-
-        for tc in cases {
-            let mut km = KeyMap::new(30);
-
-            for (k, v) in tc.vals {
-                for vv in v {
-                    km.get_or_create(Key { k, ts: vv }, true);
+                    for (k, v) in vals {
+                        for vv in v {
+                            km.get_or_create(Key { k, ts: vv }, true);
+                        }
+                    }
+        
+                    km.lru(30);
+                    assert_eq!(
+                        km.ttls.len(),
+                        len,
+                        "length does not match",
+                    );
                 }
-            }
-
-            km.lru(30);
-            assert_eq!(
-                km.ttls.len(),
-                tc.len,
-                "length does not match for '{}'",
-                tc.name
-            );
+            )*
         }
+    }
+
+    keymap_lru_tests! {
+        keymap_lru_delete_1_keep_2: (
+            HashMap::from([
+                ("foo", vec![10, 20, 25]),
+                ("bar", vec![10, 20, 50]),
+                ("foobar", vec![40, 50, 60]),
+            ]),
+            2,
+        ),
+        keymap_lru_delete_all: (
+            HashMap::from([
+                ("foo", vec![10, 20, 25]),
+                ("bar", vec![10, 20, 22]),
+                ("foobar", vec![5, 1, 28]),
+            ]),
+            0,
+        ),
+        keymap_lru_delete_none: (
+            HashMap::from([
+                ("foo", vec![40, 50, 55]),
+                ("bar", vec![32, 37, 50]),
+                ("foobar", vec![40, 50, 60]),
+            ]),
+            3,
+        ),
     }
 }
 
@@ -490,6 +472,7 @@ impl Local {
         self.ttl
     }
 
+    #[cfg(target_os = "macos")]
     pub fn new(partition_count: u32, ttl: u64, window: u64, sweep: u64) -> Self {
         Self {
             partition_count,
@@ -509,6 +492,27 @@ impl Local {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    pub fn new(partition_count: u32, ttl: u64, window: u64, sweep: u64) -> Self {
+        Self {
+            partition_count,
+            partitions: {
+                let mut v = Vec::with_capacity(partition_count as usize);
+                (0..partition_count as usize).for_each(|_| v.push(RwLock::new(KeyMap::new(window))));
+                v
+            },
+            clock: AtomicU64::new(
+                time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .expect("can't get duration since UNIX 0 - this is a bug in the code")
+                    .as_secs(),
+            ),
+            ttl,
+            sweep,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     pub fn get_or_create(&self, key: &str, create: bool) -> Result<u64, CacheError> {
         let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
         let inner = self.partitions.index(partition as usize);
@@ -533,24 +537,65 @@ impl Local {
         Ok(val)
     }
 
-    pub fn start_lru(cache: std::sync::Arc<Self>) {
-        let sweep = cache.sweep;
+    #[cfg(not(target_os = "macos"))]
+    pub fn get_or_create(&self, key: &str, create: bool) -> Result<u64, CacheError> {
+        let partition = twox_hash::xxh3::hash64(key.as_bytes()) as u32 % self.partition_count;
+        let inner = self.partitions.index(partition as usize);
+
+        let mut lock = match create {
+            true => {
+                match inner.write() {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Err(CacheError {
+                            msg: format!("failed to get partition write lock: {}", e),
+                        })
+                    }
+                }
+            },
+            false => {
+                match inner.read() {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Err(CacheError {
+                            msg: format!("failed to get partition read lock: {}", e),
+                        })
+                    }
+                }
+            }
+        };
+
+        let val = lock.get_or_create(
+            Key {
+                k: key,
+                ts: self.clock.load(Relaxed),
+            },
+            create,
+        );
+
+        Ok(val)
+    }
+
+    pub fn start_lru(self: &Arc<Local>) {
+        let clone = self.clone();
 
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(sweep));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(clone.sweep));
             loop {
                 ticker.tick().await;
-                cache.lru();
+                clone.lru();
             }
         });
     }
 
-    pub fn start_clock(cache: std::sync::Arc<Self>) {
+    pub fn start_clock(self: &Arc<Local>) {
+
+        let clone = self.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 ticker.tick().await;
-                cache.clock.store(
+                clone.clock.store(
                     time::SystemTime::now()
                         .duration_since(time::UNIX_EPOCH)
                         .expect("can't get duration since UNIX 0 - this is a bug in the code")
@@ -572,6 +617,7 @@ impl Local {
 }
 
 impl Default for Local {
+     #[cfg(target_os = "macos")]
     fn default() -> Self {
         Self {
             partition_count: DEFAULT_PARTITIONS,
@@ -579,6 +625,27 @@ impl Default for Local {
                 let mut v = Vec::with_capacity(DEFAULT_PARTITIONS as usize);
                 (0..DEFAULT_PARTITIONS as usize)
                     .for_each(|_| v.push(Mutex::new(KeyMap::default())));
+                v
+            },
+            clock: AtomicU64::new(
+                time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .expect("can't get duration since UNIX 0 - this is a bug in the code")
+                    .as_secs(),
+            ),
+            ttl: DEFAULT_TTL,
+            sweep: DEFAULT_SWEEP,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn default() -> Self {
+        Self {
+            partition_count: DEFAULT_PARTITIONS,
+            partitions: {
+                let mut v = Vec::with_capacity(DEFAULT_PARTITIONS as usize);
+                (0..DEFAULT_PARTITIONS as usize)
+                    .for_each(|_| v.push(RwLock::new(KeyMap::default())));
                 v
             },
             clock: AtomicU64::new(
@@ -678,7 +745,7 @@ mod local_tests {
             }
 
             local.clock.store(HARDCODED_TIME, Relaxed);
-            Local::start_lru(local.clone());
+            local.start_lru();
             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
             for (k, v) in tc.expected {
@@ -736,7 +803,7 @@ mod local_tests {
             },
         ];
 
-        let mut local = Local::new(10, 30, DEFAULT_WINDOW, DEFAULT_SWEEP);
+        let local = Local::new(10, 30, DEFAULT_WINDOW, DEFAULT_SWEEP);
         for tc in testcases {
             let val = local.get_or_create(tc.key, tc.create);
             let inner = val.unwrap();
@@ -749,7 +816,7 @@ mod local_tests {
         let local = Arc::new(Local::new(10, 30, DEFAULT_WINDOW, DEFAULT_SWEEP));
 
         let mut threads = Vec::new();
-        for i in 0..9 {
+        for _ in 0..10 {
             let lp = local.clone();
             let t = std::thread::spawn(move || {
                 // let mut l = lp.lock().expect("unable to get Local lock");
