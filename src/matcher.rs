@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap, ops::Deref, error::Error};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContextLinker {
@@ -35,8 +35,8 @@ struct RateConfig {
 }
 
 impl ContextLinker {
-    pub fn new(val: &str) -> std::io::Result<ContextLinker> {
-        let cfg: ContextLinkerConfig = serde_json::from_str(val)?;
+    pub fn new(val: &str) -> Result<ContextLinker, Box<dyn Error>> {
+        let cfg: ContextLinkerConfig = serde_yaml::from_str(val)?;
 
         let mut linker = ContextLinker {
             contexts: Default::default(),

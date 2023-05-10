@@ -1,0 +1,22 @@
+---
+linkers:
+- name: foo
+  contexts:
+  - bar
+  rate:
+    count: 100000000
+    ttl_seconds: 60
+- name: bar
+  contexts:
+  - foo
+  rate:
+    count: 100000000
+    ttl_seconds: 60
+- name: foobar
+  contexts:
+  - foo
+  - bar
+  rate:
+    count: 100000000
+    ttl_seconds: 60
+sweep_seconds: 30

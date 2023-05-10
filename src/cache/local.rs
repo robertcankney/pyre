@@ -3,7 +3,7 @@ extern crate test;
 use super::CacheError;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
-use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Mutex, RwLock, Arc};
+use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Arc, Mutex, RwLock};
 use std::time;
 use tokio;
 
@@ -17,7 +17,7 @@ pub struct Local {
     partition_count: u32,
     ttl: u64,
     sweep: u64,
-    /*  we want to use a Mutex for better overall performance on OS X - this is due to 
+    /*  we want to use a Mutex for better overall performance on OS X - this is due to
         platform-specific differences in how pthread_rwlock works, which is used internally
         (see https://stdrs.dev/nightly/x86_64-apple-darwin/std/sys/unix/locks/pthread_rwlock/struct.AllocatedRwLock.html).
         This seems to be due to OS X preferring writers to readers, as seen at
@@ -47,7 +47,6 @@ pub struct TTLValues {
     window: u64,
     vals: BTreeMap<u64, u64>,
 }
-
 
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -152,7 +151,6 @@ mod ttlvalues_tests {
         let mut val = TTLValues::default();
         val.inc(1000);
         val.inc(1010);
-        println!("{:?}", val);
         assert_eq!(val.get_inner(1000), 2, "actual bucket");
         assert_eq!(val.get_inner(1050), 2, "within bucket");
         assert_eq!(val.get_inner(1100), 0, "outside bucket");
@@ -270,7 +268,7 @@ mod ttlvalues_tests {
                     for v in vals {
                         ttl_val.inc(v);
                     }
-        
+
                     ttl_val.lru(ttl);
                     assert_eq!(ttl_val.vals.len(), len);
                 }
@@ -427,7 +425,7 @@ mod keymap_tests {
                             km.get_or_create(Key { k, ts: vv }, true);
                         }
                     }
-        
+
                     km.lru(30);
                     assert_eq!(
                         km.ttls.len(),
@@ -498,7 +496,8 @@ impl Local {
             partition_count,
             partitions: {
                 let mut v = Vec::with_capacity(partition_count as usize);
-                (0..partition_count as usize).for_each(|_| v.push(RwLock::new(KeyMap::new(window))));
+                (0..partition_count as usize)
+                    .for_each(|_| v.push(RwLock::new(KeyMap::new(window))));
                 v
             },
             clock: AtomicU64::new(
@@ -543,26 +542,22 @@ impl Local {
         let inner = self.partitions.index(partition as usize);
 
         let mut lock = match create {
-            true => {
-                match inner.write() {
-                    Ok(l) => l,
-                    Err(e) => {
-                        return Err(CacheError {
-                            msg: format!("failed to get partition write lock: {}", e),
-                        })
-                    }
+            true => match inner.write() {
+                Ok(l) => l,
+                Err(e) => {
+                    return Err(CacheError {
+                        msg: format!("failed to get partition write lock: {}", e),
+                    })
                 }
             },
-            false => {
-                match inner.read() {
-                    Ok(l) => l,
-                    Err(e) => {
-                        return Err(CacheError {
-                            msg: format!("failed to get partition read lock: {}", e),
-                        })
-                    }
+            false => match inner.read() {
+                Ok(l) => l,
+                Err(e) => {
+                    return Err(CacheError {
+                        msg: format!("failed to get partition read lock: {}", e),
+                    })
                 }
-            }
+            },
         };
 
         let val = lock.get_or_create(
@@ -589,7 +584,6 @@ impl Local {
     }
 
     pub fn start_clock(self: &Arc<Local>) {
-
         let clone = self.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -617,7 +611,7 @@ impl Local {
 }
 
 impl Default for Local {
-     #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]
     fn default() -> Self {
         Self {
             partition_count: DEFAULT_PARTITIONS,
@@ -683,7 +677,7 @@ mod local_tests {
     #[tokio::test]
     async fn test_start_clock() {
         let local = std::sync::Arc::new(Local::new(2, 30, 5, 1));
-        Local::start_clock(local.clone());
+        Local::start_clock(&local);
         let mut running_time = local.clock.load(Relaxed);
 
         for _ in 0..5 {
@@ -751,9 +745,7 @@ mod local_tests {
             for (k, v) in tc.expected {
                 let val = local
                     .get_or_create(k, false)
-                    .map_err(|e| println!("failure getting val: {}", e))
                     .ok();
-                println!("{:?}", val);
                 assert_eq!(
                     v.or(Some(0)).unwrap(),
                     val.or(Some(0)).unwrap(),
@@ -832,7 +824,7 @@ mod local_tests {
         }
 
         let val = local
-            .get_or_create("foo", true)
+            .get_or_create("foo", false)
             .expect("failed to get Local lock");
 
         assert_eq!(val, 10);

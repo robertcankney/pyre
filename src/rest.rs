@@ -136,12 +136,28 @@ impl Handler {
                 .body(json!(Response { allowed: false }).to_string()));
         }
 
-        // what is this? shouldn't this be adding to val based on keys in link.contexts?
-        // need to check tests, very odd
+        let mut linked = Self::get_linked_vals(&parent, &key, &link)?;
+        let mut resp = HttpResponse::build(http::StatusCode::OK);
+        let resp = resp.insert_header(header::ContentType::json());
+
+        match linked > link.rate {
+            true => Ok(resp.body(json!(Response { allowed: false }).to_string())),
+            false => Ok(resp.body(json!(Response { allowed: true }).to_string())),
+        }
+    }
+
+    // get_linked_vals gets values from linked contexts, if any, for the context
+    fn get_linked_vals(handler: &web::Data<Handler>, key: &str, link: &matcher::Link) -> Result<u64, HTTPError> {
         let mut linked = 0;
-        for _ in &link.contexts {
-            linked += cache.get_or_create(key, false).map_err(|e| {
-                event!(Level::ERROR, message = "can't get or create val", error = %e);
+
+        for k in link.contexts.iter() {
+            let related = match handler.caches.get(k) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            linked += related.get_or_create(key, false).map_err(|e| {
+                event!(Level::ERROR, message = "can't get val", error = %e);
 
                 HTTPError {
                     msg: format!("failed to get val: {}", e),
@@ -150,13 +166,7 @@ impl Handler {
             })?;
         }
 
-        let mut resp = HttpResponse::build(http::StatusCode::OK);
-        let resp = resp.insert_header(header::ContentType::json());
-
-        match linked > link.rate {
-            true => Ok(resp.body(json!(Response { allowed: false }).to_string())),
-            false => Ok(resp.body(json!(Response { allowed: true }).to_string())),
-        }
+        Ok(linked)
     }
 }
 
