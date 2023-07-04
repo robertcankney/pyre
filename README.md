@@ -1,34 +1,29 @@
 ## pyre
 
-Pyre provides rate-limiting as a service, with a number of useful features:
-- the ability to link different rate limiting contexts, including linking at different weights
-- easily configurable bucketing/TTLs
+Pyre is a rate-limiting service, intended to be used as a sidecar for services that need high performance and do not need limits to persist across reboots. It stores all rates in memory, partitioned into collections.
 
-It's feature set can be best illustrated by using a sample configuration file:
+## Configuring pyre
 
-```json
+Pyre takes a config for collections as the first argument to the executable. Collection configs are separated by commas:
+
+`collection_name=rate:time period,collection_name_2=rate2:time period2`.
+
+Rate is an integer, and time period should be a `systemd.time`-compatible value with no commas.
+
+## Using pyre
+
+All requests to pyre are done via GET requests a single URL path: `rate/{collection}/{key}`. All responses are JSON, and are either the rate limit response or an error response.
+
+Rate limit response:
+```
 {
-    "linkers": [
-        {
-            "name": "foo",
-            "contexts": ["bar"],
-            "rate": {
-                "count": 10,
-                "ttl_seconds": 60,
-                "bucket_size": 60,
-            }
-        },
-        {
-            "name": "bar",
-            "contexts": ["foo"],
-            "rate": {
-                "count": 10,
-                "ttl_seconds": 30
-            }
-        }
-    ],
-    "sweep_seconds": 30
+    "allowed": boolean
 }
 ```
 
-In the above configuration, two contexts are configured, accessible at `${address_and_port}/#{context}/#{key}` - foo, and bar. `count` and `ttl_seconds` are defined for each context - these define how many requests can be done in a given window, and Foo and bar are linked, meaning the total for bar will be added to foo when assessi
+Error response:
+```
+{
+    "error": "message"
+}
+```

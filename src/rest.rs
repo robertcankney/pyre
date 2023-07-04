@@ -22,9 +22,9 @@ pub struct Response {
 }
 
 #[derive(Debug, Display, Serialize, Deserialize)]
-#[display(fmt = "{}", msg)]
+#[display(fmt = "{}", error)]
 pub struct HTTPError {
-    msg: String,
+    error: String,
     #[serde(skip_serializing)]
     #[serde(skip_deserializing)]
     code: actix_web::http::StatusCode,
@@ -78,7 +78,7 @@ impl Handler {
             tracing::error!("no collection URL parameter");
 
             HTTPError {
-                msg: "missing collection parameter".to_string(),
+                error: "missing collection parameter".to_string(),
                 code: http::StatusCode::BAD_REQUEST,
             }
         })?;
@@ -87,7 +87,7 @@ impl Handler {
             tracing::info!("no key URL parameter");
 
             HTTPError {
-                msg: "missing key parameter".to_string(),
+                error: "missing key parameter".to_string(),
                 code: http::StatusCode::BAD_REQUEST,
             }
         })?;
@@ -100,7 +100,7 @@ impl Handler {
             );
 
             HTTPError {
-                msg: format!("cannot find cache for collection parameter {}", coll),
+                error: format!("cannot find cache for collection parameter {}", coll),
                 code: http::StatusCode::BAD_REQUEST,
             }
         })?;
@@ -109,7 +109,7 @@ impl Handler {
             event!(Level::ERROR, message = "can't get or create val", error = %e);
 
             HTTPError {
-                msg: format!("failed to get_or_create val: {}", e),
+                error: format!("failed to get_or_create val: {}", e),
                 code: http::StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
@@ -122,7 +122,7 @@ impl Handler {
             );
 
             HTTPError {
-                msg: format!("cannot find config for collection parameter {}", coll),
+                error: format!("cannot find config for collection parameter {}", coll),
                 code: http::StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
@@ -287,9 +287,9 @@ mod test {
                     let parsed: HTTPError =
                         serde_json::from_slice(&body[..]).expect("cannot parse as HTTPError");
                     assert!(
-                        parsed.msg.contains(err),
+                        parsed.error.contains(err),
                         "body does not match expected: {}",
-                        parsed.msg
+                        parsed.error
                     );
                 }
     
