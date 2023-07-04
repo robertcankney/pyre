@@ -23,7 +23,6 @@ async fn main() -> Result<(), Box<Error>> {
         .unwrap();
 
     let mut args = std::env::args().collect::<Vec<String>>();
-    _ = args.pop();
     let cfg = args.pop().ok_or(config::ConfigError{msg: "missing a config string".to_string()}).map_err(to_io_err)?;
     let linker = cfg.try_into().map_err(to_io_err)?;
 

@@ -1,3 +1,4 @@
+// bench.go is a script for doing black-box benchmarking of pyre performance.
 package main
 
 import (
@@ -9,12 +10,13 @@ import (
 )
 
 const (
-	threads = 150
-	count   = 1_000_000
+	threads = 128
+	count   = 2_000_000
 )
 
 func main() {
 	var urls []string
+	
 	for i := 0; i < count; i++ {
 		u := rand.Int31() % 1024
 		urls = append(urls, fmt.Sprintf("http://localhost:8080/rate/foo/%d", u))

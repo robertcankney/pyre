@@ -1,7 +1,7 @@
 use super::CacheError;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
-use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Arc, Mutex, RwLock};
+use std::sync::{atomic::AtomicU64, atomic::Ordering::Relaxed, Arc, Mutex};
 use std::time;
 use tokio;
 

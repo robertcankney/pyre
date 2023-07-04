@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, ops::Deref};
+use std::{collections::HashMap};
 use derive_more::{Error, Display};
 
 const NAME_SEPARATOR: &str = "=";
@@ -50,6 +50,7 @@ impl TryFrom<&str> for RateConfig {
     type Error =  ConfigError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        println!("{}", value);
         let mut name_split = value.split(NAME_SEPARATOR).collect::<Vec<&str>>();
         let rate = name_split
         .pop()

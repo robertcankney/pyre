@@ -69,11 +69,6 @@ impl Handler {
         parent: web::Data<Handler>,
         req: HttpRequest,
     ) -> Result<HttpResponse, actix_web::Error> {
-        let span = tracing::error_span!("error_span! macro");
-        span.in_scope(|| {
-            tracing::error!("error! macro");
-        });
-
         let coll = req.match_info().get("collection").ok_or_else(|| {
             tracing::error!("no collection URL parameter");
 
