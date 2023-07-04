@@ -1,4 +1,4 @@
-#![feature(test)]
+use std::io::{Error, ErrorKind};
 use actix_web::{
     web::{self, Data},
     App, HttpServer,
@@ -7,11 +7,11 @@ use tracing;
 use tracing_subscriber;
 
 mod cache;
-mod matcher;
 mod rest;
+mod config;
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<(), Box<Error>> {
     let format = tracing_subscriber::fmt::format().json();
     let subscriber = tracing_subscriber::fmt()
         // .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
@@ -22,8 +22,11 @@ async fn main() -> std::io::Result<()> {
         .map_err(|err| eprintln!("Unable to set global default subscriber: {}", err))
         .unwrap();
 
-    let contents = std::fs::read_to_string("config.json").expect("failed to open config");
-    let linker = matcher::ContextLinker::new(&contents).expect("failed to create ContextLinker");
+    let mut args = std::env::args().collect::<Vec<String>>();
+    _ = args.pop();
+    let cfg = args.pop().ok_or(config::ConfigError{msg: "missing a config string".to_string()}).map_err(to_io_err)?;
+    let linker = cfg.try_into().map_err(to_io_err)?;
+
     let handler = rest::Handler::new(linker);
     let wrapper = Data::new(handler);
 
@@ -36,7 +39,12 @@ async fn main() -> std::io::Result<()> {
                 web::get().to(rest::Handler::handle),
             )
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
+    .map_err(|e| Box::new(e))
+}
+
+fn to_io_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(err: E) -> Box<std::io::Error> {
+    Box::new(std::io::Error::new(ErrorKind::Other, err))
 }

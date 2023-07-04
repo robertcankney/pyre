@@ -8,12 +8,12 @@ edition = "2021"
 [dependencies]
 actix-web = "4"
 derive_more = "0.99.17"
+parse_duration = "2.1.1"
 twox-hash = "1.6.3"
 rand = "0.8"
 serde_json = "1.0.81"
 serde_yaml = "0.9.21"
 serde = { version = "1.0.137", features = ["derive"] }
-ticker = "0.1.1"
 tracing = {version = "0.1.36", features = ["attributes"]}
 tracing-actix-web = "0.6.0"
 tracing-subscriber = { version = "0.3.11", features = ["json"]}

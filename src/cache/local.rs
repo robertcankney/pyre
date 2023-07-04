@@ -1,5 +1,3 @@
-extern crate test;
-
 use super::CacheError;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
@@ -9,8 +7,7 @@ use tokio;
 
 pub const DEFAULT_PARTITIONS: u32 = 1024;
 pub const DEFAULT_TTL: u64 = 300;
-pub const DEFAULT_WINDOW: u64 = 60;
-pub const DEFAULT_SWEEP: u64 = 30;
+pub const DEFAULT_SWEEP: u64 = 60;
 
 #[derive(Debug)]
 pub struct Local {
@@ -126,7 +123,7 @@ impl TTLValues {
 impl Default for TTLValues {
     fn default() -> Self {
         Self {
-            window: DEFAULT_WINDOW,
+            window: DEFAULT_SWEEP,
             vals: Default::default(),
         }
     }
@@ -140,7 +137,7 @@ mod ttlvalues_tests {
     #[test]
     fn test_new_ttlvalue() {
         let val = TTLValues::default();
-        assert_eq!(val.window, DEFAULT_WINDOW);
+        assert_eq!(val.window, DEFAULT_SWEEP);
 
         let val = TTLValues::new(100);
         assert_eq!(val.window, 100);
@@ -657,7 +654,7 @@ impl Default for Local {
 #[cfg(test)]
 mod local_tests {
 
-    extern crate test;
+    // extern crate test;
 
     use super::*;
     use rand::Rng;
@@ -665,7 +662,7 @@ mod local_tests {
 
     #[test]
     fn test_new_local() {
-        let local = Local::new(5, 30, DEFAULT_WINDOW, DEFAULT_SWEEP);
+        let local = Local::new(5, 30, DEFAULT_SWEEP, DEFAULT_SWEEP);
         assert_eq!(local.partition_count, 5);
         assert_eq!(local.ttl, 30);
 
@@ -795,7 +792,7 @@ mod local_tests {
             },
         ];
 
-        let local = Local::new(10, 30, DEFAULT_WINDOW, DEFAULT_SWEEP);
+        let local = Local::new(10, 30, DEFAULT_SWEEP, DEFAULT_SWEEP);
         for tc in testcases {
             let val = local.get_or_create(tc.key, tc.create);
             let inner = val.unwrap();
@@ -805,7 +802,7 @@ mod local_tests {
 
     #[test]
     fn test_get_or_create_concurrent() {
-        let local = Arc::new(Local::new(10, 30, DEFAULT_WINDOW, DEFAULT_SWEEP));
+        let local = Arc::new(Local::new(10, 30, DEFAULT_SWEEP, DEFAULT_SWEEP));
 
         let mut threads = Vec::new();
         for _ in 0..10 {
@@ -828,53 +825,5 @@ mod local_tests {
             .expect("failed to get Local lock");
 
         assert_eq!(val, 10);
-    }
-
-    #[bench]
-    fn bench_get_or_create_concurrent(b: &mut test::Bencher) {
-        b.iter(|| {
-            let threads = 2;
-            let requests = 100000;
-            let local = Local::new(128, 300, DEFAULT_WINDOW, DEFAULT_SWEEP);
-            let local_protected = Arc::new(local);
-            let mut data = vec![Vec::new(); threads];
-            let mut rng = rand::thread_rng();
-
-            for i in &mut data {
-                for _ in 0..requests {
-                    let val: i32 = rng.gen();
-                    i.push(val.to_string());
-                }
-            }
-
-            let mut data_iter = data.into_iter();
-            let mut handles = Vec::new();
-
-            let now = time::SystemTime::now();
-            for _i in 0..threads {
-                let lp = local_protected.clone();
-                let keys = data_iter.next().unwrap();
-                let t = std::thread::spawn(move || {
-                    for key in keys {
-                        // let mut l = lp.lock().expect("unable to get Local lock");
-                        if let Err(e) = lp.get_or_create(&key, true) {
-                            panic!("failed to get get_or_create: {}", e.to_string());
-                        }
-                    }
-                });
-                handles.push(t);
-            }
-
-            for i in handles {
-                let _ = i.join();
-            }
-
-            let done = time::SystemTime::now();
-            println!(
-                "done: {}, {} rps",
-                done.duration_since(now).unwrap().as_secs_f64(),
-                (threads * requests) as f64 / done.duration_since(now).unwrap().as_secs_f64()
-            )
-        })
     }
 }
